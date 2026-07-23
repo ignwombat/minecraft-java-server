@@ -4,19 +4,20 @@
         "module": "esnext",
         "moduleResolution": "bundler",
 
-        "lib": ["ESNext"],
+        "lib": ["DOM", "DOM.Iterable", "ESNext"],
         "esModuleInterop": true,
         "strict": true,
         "allowImportingTsExtensions": true,
 
         "types": ["node"],
-        
-        "rootDir": ".",
+
+        "rootDir": "./src",
         "outDir": "./dist",
 
-        "noEmit": true
+        "declaration": true,
+        "emitDeclarationOnly": true
     },
 
-    "include": ["src/**/*", "./build.ts"],
-    "exclude": ["node_modules"]
+    "include": ["src/**/*"],
+    "exclude": ["node_modules", "src/tests"]
 }

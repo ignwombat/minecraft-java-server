@@ -1,34 +1,26 @@
-import eventEmitter from './emitter';
+// Net
 import Net, { Socket } from 'node:net';
 
-import { RconConfig, LoadDefaults } from './config';
-import { DefaultConfig } from './server';
+// Types
+import type { ConnectionError } from './types';
 
-export enum RequestType {
-    Auth = 0x03,
-    Exec = 0x02
-}
+// Local
+import {
+    RconRequestType,
+    RconRequestId,
+    RconResponseType
+} from './enum';
+import { defaultServerConfig } from './serverConfig';
 
-export enum RequestId {
-    Auth = 0x123,
-    Exec = 0x321
-}
+import eventEmitter from './eventEmitter';
+import addObjectDefaults from './addObjectDefaults';
 
-export enum ResponseType {
-    Auth = 0x02,
-    Exec = 0x00
-}
-
-type ConnectionError = Error & { code: string };
-
-interface Events {
-    connect: void;
-    disconnect: void;
-    error: string;
-    warn: string;
-}
-
-export function encode(type: RequestType, id: RequestId, body: string) {
+/** Encodes a string body into a network buffer. */
+export function encode(
+    type: RconRequestType,
+    id: RconRequestId,
+    body: string
+): Buffer<ArrayBuffer> {
     const size = Buffer.byteLength(body) + 14;
     const buffer = Buffer.alloc(size);
 
@@ -41,7 +33,13 @@ export function encode(type: RequestType, id: RequestId, body: string) {
     return buffer;
 }
 
-export function decode(chunk: Uint8Array) {
+/** Decodes a network chunk. */
+export function decode(chunk: Uint8Array): {
+    size: number;
+    id: RconRequestId;
+    type: number;
+    body: string;
+} {
     const buffer = Buffer.from(chunk);
 
     return {
@@ -52,9 +50,37 @@ export function decode(chunk: Uint8Array) {
     }
 }
 
-type RconPromise = [(value: string) => void, (error: string) => void];
+export type RconPromise = [(value: string) => void, (error: string) => void];
 
-export class Rcon {
+/** Remote Connection Configuration */
+export interface RconConfig {
+    /**
+     * Server Address the remote connection should use.
+     * @default 'localhost'
+    */
+    host: string;
+
+    /**
+     * Port to use for the remote connection.
+     * @default 25575
+    */
+    port: number;
+
+    /**
+     * Password for the remote connection.
+     * @default 'randomly-generated-password'
+    */
+    password: string;
+    
+    /**
+     * Buffer delay in milliseconds.
+     * Queue will be backed up and sent all at once every X milliseconds.
+     * @default 200
+    */
+    bufferMilliseconds?: number;
+}
+
+export default class Rcon {
     public config: RconConfig;
 
     private socket?: Socket;
@@ -62,13 +88,20 @@ export class Rcon {
 
     private queue: [string, ...RconPromise][] = [];
     private promises: { [execId: number]: RconPromise } = {};
-    private execId: number = RequestId.Exec;
+    private execId: number = RconRequestId.Exec;
 
-    private tickInterval?: NodeJS.Timer;
+    private tickInterval?: NodeJS.Timeout;
     
-    private emitter = eventEmitter<Events>();
+    private emitter = eventEmitter<{
+        connect: void;
+        disconnect: void;
+        error: string;
+        warn: string;
+    }>();
+
     public on = this.emitter.on;
     public off = this.emitter.off;
+    public once = this.emitter.once;
     
     private nextExecId() {
         return (this.execId += 1);
@@ -76,15 +109,15 @@ export class Rcon {
     
     private listen() {
         this.socket?.on('data', chunk => {
-            const packet = decode(chunk);
+            const packet = decode(chunk as Buffer);
             
             switch(packet.type) {
-                case ResponseType.Auth:
+                case RconResponseType.Auth:
                     this.authenticated = true;
                     this.emitter.emit('connect');
                     break;
                     
-                case ResponseType.Exec:
+                case RconResponseType.Exec:
                     this.promises[packet.id]?.[0](packet.body);
                     break;
                     
@@ -97,12 +130,19 @@ export class Rcon {
                 
     private tick() {
         if (this.socket && this.authenticated && this.queue.length) {
-            const [msg, resolve, reject] = this.queue.shift();
+            const queue = this.queue.shift();
+            if (!queue) return;
+
+            const msg: string = queue[0];
+            const resolve = queue[1];
+            const reject = queue[2];
 
             const execId = this.nextExecId();
             this.promises[execId] = [resolve, reject];
             
-            this.socket.write(encode(RequestType.Exec, execId, msg));
+            this.socket.write(
+                encode(RconRequestType.Exec, execId, msg)
+            );
         }
     }
     
@@ -113,7 +153,7 @@ export class Rcon {
     }
 
     public connect(maxAttempts: number = 10, attempts: number = 0) {
-        if (this.authenticated) throw new Error('Already connected');
+        if (this.authenticated) return;
         this.socket?.destroy();
 
         attempts += 1;
@@ -124,7 +164,11 @@ export class Rcon {
         }, () => {
             this.listen();
             this.socket?.write(
-                encode(RequestType.Auth, RequestId.Auth, this.config.password)
+                encode(
+                    RconRequestType.Auth,
+                    RconRequestId.Auth,
+                    this.config.password
+                )
             );
         });
 
@@ -133,14 +177,17 @@ export class Rcon {
                 if (attempts > maxAttempts) return this.emitter.emit('error', `Failed to connect ${maxAttempts} times`);
 
                 this.emitter.emit('warn', 'Failed to connect. Retrying...');
-                return setTimeout(() => this.connect(maxAttempts, attempts));
+                return setTimeout(() => this.connect(maxAttempts, attempts), 500);
             }
 
             this.emitter.emit('error', `Failed to connect: ${err.message}`);
         });
 
         this.tickInterval && clearInterval(this.tickInterval);
-        this.tickInterval = setInterval(() => this.tick(), this.config.buffer);
+        this.tickInterval = setInterval(
+            () => this.tick(),
+            this.config.bufferMilliseconds
+        );
     }
 
     public disconnect() {
@@ -154,16 +201,18 @@ export class Rcon {
 
         this.tickInterval && clearInterval(this.tickInterval);
 
-        Object.keys(this.promises).forEach(execId => {
-            this.promises[execId][1]('Disconnected');
-        });
+        for (const key in this.promises) {
+            this.promises[key][1]?.('Disconnected');
+        }
 
         this.queue.forEach(promise => promise[2]('Disconnected'));
-
         this.emitter.emit('disconnect');
     }
 
     constructor(config: RconConfig) {
-        this.config = LoadDefaults<RconConfig>(config, DefaultConfig.rcon);
+        this.config = addObjectDefaults<RconConfig>(
+            config,
+            defaultServerConfig.rcon!
+        );
     }
 }

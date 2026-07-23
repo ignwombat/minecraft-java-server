@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# Server files
+java/
+jarfiles/
+paper-server/
+vanilla-server/

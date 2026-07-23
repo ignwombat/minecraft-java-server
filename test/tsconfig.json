@@ -17,6 +17,6 @@
         "noEmit": true
     },
 
-    "include": ["src/**/*", "./build.ts"],
+    "include": ["./**/*"],
     "exclude": ["node_modules"]
 }

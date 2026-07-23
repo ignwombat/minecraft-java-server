@@ -1,54 +1,73 @@
 # Minecraft Java Server
 This library helps you run and manage your
 Minecraft Java Edition server through a node.js environment.
-It supports type declarations with Typescript, meaning you don't need to install any @types library.
 
-It is heavily inspired by [@scriptserver/core](https://npmjs.com/package/@scriptserver/core). I created it after discovering a missing feature in the library, and decided to make my own, both to learn, and to be able to continue what I was working on.
+It is heavily inspired by [@scriptserver/core](https://npmjs.com/package/@scriptserver/core).
+I created it after discovering a missing feature in the library, and decided to make my own.
 
-The library utilizes Minecraft's rcon feature. It allows you to securely send commands through networking, and receive the output text through the response.
+The library utilizes Minecraft's RCON feature, allowing commands to be sent through networking,
+receiving the output text through the response.
 
 ## Usage
-### Installation
-Run the following command in your project's root directory:
-```bat
-npm install minecraft-java-server --save
-```
-### Basic Usage
 ```js
 import { MinecraftServer } from 'minecraft-java-server';
 
+// Create a new Minecraft Server
 const server = new MinecraftServer({
-    jar: 'server.jar',
-    path: 'C:/path/to/your/minecraft/server/directory',
+    eula: true, // Minecraft's eula must be agreed to using this value
+    type: 'paper', // Only vanilla and paper are available without custom event patterns (defaults to vanilla)
 
-    args: ['-Xms4G', '-Xmx4G'],
+    serverPath: './paper-server', // Path to the server directory (defaults to ./server)
 
-    // Minecraft's eula must be agreed to using this value
-    eula: true,
+    // Path to the jarfile (defaults to server.jar in the server directory)
+    jarFile: './paper-server/paper.jar',
 
-    // every property is the equivalent of server.properties, except for vital ones
+    // server.properties, omits important values
     properties: {
-        motd: "Minecraft server hosted with minecraft-java-server",
         "max-players": 10
-    }
+    },
+
+    stdin: true, // Enables typing commands in the terminal
+    stdout: false // If true, outputs the server console to the terminal
 });
 
-// Start event
-server.on('start', () => {
-    console.log('Server started');
-});
-
-// Stop event
-server.on('stop', () => {
-    console.log('Server stopped');
+// Log the server console with a dim color
+server.on('console', msg => {
+    console.log("\x1b[2m" + msg + "\x1b[0m");
 });
 
 // Start the server
-server.start();
+server.start().then(async () => {
+    console.log("Server started! Banning Herobrine...");
 
-server.send('ban herobrine').then(response => {
-    console.log('Command result: ', response);
-}).catch(err => console.log('Failed to run command', err));
+    // Sending commands returns a promise with the result
+    const result = await server.send("ban herobrine");
+    console.log(result);
+});
+
+// Detect when the server stops
+server.on('stop', () => {
+    console.log("Server stopped.");
+});
 ```
-Since server.send returns a promise, this also works in an asynchronous context using await.
-The promise is rejected if the server disconnects after queueing the command.
+
+## Important note about RegEx
+To detect when certain events occur on the server, such as the server completing startup, or the server shutting down,
+Regular Expressions are used on the terminal output.
+
+This can cause issues when the format of status messages changes, such as when using older server versions.
+
+**You may need to define custom event patterns in this case.**
+When doing so, ensure that you use the `^` anchor, to avoid players being able to fire these events on accident.
+
+```js
+import MinecraftServer, { EventPatterns } from 'minecraft-java-server';
+const server = new MinecraftServer({
+    // ...
+    eventPatterns: {
+        ...EventPatterns.vanilla,
+        // A console line must match this pattern for the 'start' event to fire
+        start: /^(\[[\d:]*\])?\s*\[[^\]]*INFO\]:\s*RCON\s*running\s*on/
+    }
+})
+```

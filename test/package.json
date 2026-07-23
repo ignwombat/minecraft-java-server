@@ -1,0 +1,12 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "vanilla": "node vanilla.ts",
+    "paper": "node paper.ts"
+  },
+  "dependencies": {
+    "minecraft-java-server": ".."
+  },
+  "license": "MIT"
+}

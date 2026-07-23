@@ -1,133 +1,224 @@
-import { spawn, ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
+// Path
+import { join } from 'node:path';
 
-import { Rcon } from './rcon';
-import eventEmitter from './emitter';
+// FS
+import { mkdirSync, statSync } from 'node:fs';
 
-import { EventPatterns, ServerConfig, LoadDefaults } from './config';
+// Child Process
+import { spawn, type ChildProcess } from 'node:child_process';
 
-import loadProperties from './properties';
-import loadEula from './eula';
+// Types
+import type {
+    RSU,
+    ServerConfig
+} from './types';
 
-export const DefaultConfig: ServerConfig = {
-    jar: 'server.jar',
-    type: 'vanilla',
+// Local
+import eventEmitter, { EventKey } from './eventEmitter';
+import Rcon from './rcon';
 
-    path: '.',
-    executable: 'java',
-    args: ['-Xms1G', '-Xmx1G'],
+import { loadEula, loadServerProperties } from './loader';
+import { addServerConfigDefaults } from './serverConfig';
 
-    eula: false,
-
-    properties: {},
-
-    pipeStdout: true,
-    pipeStdin: true,
-
-    eventPatterns: EventPatterns.vanilla,
-
-    port: 25565,
-    rcon: {
-        host: 'localhost',
-        port: 25575,
-        password: 'password',
-        buffer: 200
-    }
-};
-
-interface Events {
-    console: string;
-
-    start: void;
-    stop: void;
-    crash: void;
-
-    eula: string;
+const safeStat = (path: string) => {
+    try {
+        return statSync(path);
+    } catch {}
 }
 
-export class MinecraftServer {
+export interface MinecraftServerEvents {
+    console: string;
+
+    rcon: void; // The server has started listening to RCON connections
+    start: void; // The server has started, and RCON has successfully connected
+    stop: void; // The server has stopped
+    crash: void; // The server has crashed
+}
+
+export default class MinecraftServer {
     public config: ServerConfig;
-    private process?: ChildProcess;
+    public childProcess?: ChildProcess;
     public rcon: Rcon;
 
-    private emitter = eventEmitter<Events>();
+    private emitter = eventEmitter<MinecraftServerEvents>();
+
     public on = this.emitter.on;
+    public once = this.emitter.once;
     public off = this.emitter.off;
 
-    public start() {
-        if (this.process) throw new Error('Server already running');
+    public started = false;
+    public crashed = false;
+
+    public start(): Promise<MinecraftServer> {
+        this.crashed = false;
+        if (this.childProcess) throw new Error('Server already running');
+
+        // Create the server directory
+        mkdirSync(this.config.serverPath!, { recursive: true });
+
+        if (!safeStat(this.config.jarFile!)?.isFile())
+            throw new Error(`Jarfile '${this.config.jarFile}' does not exist`);
 
         loadEula(this.config);
-        loadProperties(this.config);
+        loadServerProperties(this.config);
 
-        this.on('start', () => { this.rcon?.connect(); });
+        let promise = new Promise<MinecraftServer>(res => {
+            this.once('rcon', () => {
+                setTimeout(() => { this.rcon!.connect(); }, 500);
 
-        this.on('stop', () => {
-            this.rcon?.disconnect();
-            this.process?.kill('SIGKILL');
+                this.rcon!.once('connect', () => {
+                    this.started = true;
+                    this.emitter.emit('start');
+                    res(this);
+                });
+            });
         });
 
-        this.on('crash', () => {
-            this.rcon?.disconnect();
-            this.process?.kill('SIGKILL');
+        this.once('stop', () => {
+            this.started = false;
+            this.rcon!.disconnect();
+
+            this.config.stdin && process.stdin.unpipe();
+
+            this.childProcess?.kill('SIGKILL');
+            this.childProcess = undefined;
         });
 
-        this.process = spawn(
-            this.config.executable,
-            [...this.config.args, '-jar', this.config.jar, 'nogui'],
+        this.once('crash', () => {
+            this.started = false;
+            this.crashed = true;
+
+            this.config.stdin && process.stdin.unpipe();
+
+            this.rcon!.disconnect();
+            this.childProcess?.kill('SIGKILL');
+            this.childProcess = undefined;
+        });
+
+        this.childProcess = spawn(
+            this.config.javaExecutable!,
+            [
+                ...(this.config.execArgs ?? []),
+                '-jar',
+                this.config.jarFile!,
+                'nogui'
+            ],
             {
-                cwd: this.config.path,
-                stdio: ['pipe', 'pipe', 'pipe'],
+                cwd: this.config.serverPath,
+                stdio: 'pipe',
                 detached: false
             }
         );
 
-        if (this.config.pipeStdout) {
-            this.process.stdout?.pipe(process.stdout);
-            this.process.stderr?.pipe(process.stdout);
-        }
+        this.childProcess.on('exit', exitCode => {
+            this.started = false;
+            this.rcon!.disconnect();
 
-        if (this.config.pipeStdin) process.stdin.pipe(this.process.stdin);
+            this.config.stdin && process.stdin.unpipe();
 
-        this.process.stdout?.on('data', (chunk: Buffer) => {
+            if (exitCode === 0) {
+                this.emitter.emit('stop');
+            }
+
+            else {
+                this.crashed = true;
+                this.emitter.emit('crash');
+            }
+        });
+
+        this.config.stdin && process.stdin.pipe(this.childProcess.stdin!);
+
+        this.childProcess.stdout?.on('data', (chunk: Buffer) => {
+            this.config.stdout && process.stdout.write(chunk);
+
             chunk
                 .toString()
                 .trim()
-                .split(/\n/)
-                .forEach(msg => this.emitter.emit('console', msg));
+                .split(/\r?\n/g)
+                .forEach(msg => {
+                    // Emit to console
+                    this.emitter.emit('console', msg);
+
+                    // Handle event patterns
+                    const eventPatterns = this.config.eventPatterns!;
+
+                    for (const key in eventPatterns) {
+                        const pattern = (eventPatterns as unknown as RSU)[key] as RegExp;
+                        if (msg.match(pattern))
+                            switch(key) {
+                                case 'rcon':
+                                    !this.started && this.emitter.emit('rcon');
+                                    break;
+                                case 'stop':
+                                    this.started && this.emitter.emit('stop');
+                                    break;
+                                case 'crash':
+                                    !this.crashed && this.emitter.emit('crash');
+                                    break;
+                                default:
+                                    this.emitter.emit(
+                                        key as EventKey<MinecraftServerEvents>,
+                                        msg
+                                    );
+                                    break;
+                            }
+                    }
+                });
         });
 
-        process.on('exit', () => { this.stop(); });
-        this.process.on('exit', () => { this.stop(); });
-    }
+        if (this.config.gracefulShutdown) {
+            let stopping = false;
+            const shutdownListener = async () => {
+                if (stopping) return;
+                stopping = true;
 
-    public stop() {
-        this.send('stop')
-        .catch(() => this.process?.kill());
-    }
+                await this.stop();
+                this.childProcess?.killed && this.childProcess?.kill();
 
-    public send(msg: string) {
-        if (!this.process) throw new Error('Server not running');
-        return this.rcon?.send(msg);
-    }
+                console.log();
+                process.exit(0);
+            }
 
-    constructor(config: Partial<ServerConfig>) {
-        config.eventPatterns ??= EventPatterns[config.type || 'vanilla'] || EventPatterns.vanilla;
-        this.config = LoadDefaults<ServerConfig>(config, DefaultConfig);
+            process.on('SIGTERM', shutdownListener);
+            process.on('SIGINT', shutdownListener);
 
-        if (!existsSync(this.config.path)) throw new Error(`Path '${this.config.path}' does not exist`);
-        if (!existsSync(`${this.config.path}/${this.config.jar}`)) throw new Error(`Jarfile '${this.config.jar}' does not exist`);
-
-        this.rcon = new Rcon(this.config.rcon);
-        
-        const eventPatterns = this.config.eventPatterns;
-
-        this.emitter.on('console', msg => {
-            Object.keys(eventPatterns).forEach((key: keyof Events) => {
-                if (msg.match(eventPatterns[key])) {
-                    this.emitter.emit(key, msg);
-                }
+            this.on('stop', () => {
+                process.off('SIGTERM', shutdownListener);
+                process.off('SIGINT', shutdownListener);
             });
+        }
+
+        return promise;
+    }
+
+    public stop(): Promise<MinecraftServer> {
+        let resolve: (server: MinecraftServer) => void;
+        
+        const promise = new Promise<MinecraftServer>(res => {
+            resolve = res;
+            this.once('stop', () => res(this));
         });
+        
+        this.send('stop')
+            .catch(() => {
+                this.childProcess?.kill();
+                resolve(this);
+            });
+
+        return promise;
+    }
+
+    public send(msg: string): Promise<string> {
+        if (!this.childProcess) throw new Error('Server not running');
+        return this.rcon!.send(msg);
+    }
+
+    constructor(config: ServerConfig) {
+        this.config = addServerConfigDefaults(config);
+        this.rcon = new Rcon(this.config.rcon!);
+
+        this.start = this.start.bind(this);
+        this.stop = this.stop.bind(this);
+        this.send = this.send.bind(this);
     }
 }

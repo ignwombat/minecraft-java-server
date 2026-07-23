@@ -1,26 +1,44 @@
 {
+  "type": "module",
   "name": "minecraft-java-server",
   "version": "1.0.3",
   "description": "Gives the ability to manage your Minecraft Java Edition server, using plain javascript/typescript. Inspired by @scriptserver/core",
-  "keywords": ["minecraft", "server", "wrapper", "java", "mojang"],
+  "keywords": [
+    "bedrock",
+    "curseforge",
+    "forge",
+    "java",
+    "microsoft",
+    "minecraft",
+    "modded",
+    "mojang",
+    "neoforge",
+    "server",
+    "wrapper"
+  ],
+  "author": "IgnWombat <ignwombat@gmail.com> (https://github.com/ignwombat)",
   "main": "dist/index.js",
   "repository": {
     "type": "git",
-    "url": "https://github.com/joaisa17/minecraft-java-server.git"
+    "url": "https://github.com/ignwombat/minecraft-java-server.git"
   },
-  "bugs": "https://github.com/joaisa17/minecraft-java-server/issues",
+  "bugs": "https://github.com/ignwombat/minecraft-java-server/issues",
   "scripts": {
-    "test": "ts-node src/test.ts",
-    "build": "tsc"
+    "build": "node build.ts && tsc -p tsconfig.types.json",
+    "test": "node --test",
+    "release": "npm test && npm run build && changeset publish"
   },
-  "author": {
-    "name": "Joakim Isaksen",
-    "email": "pvpdaimer@gmail.com"
-  },
-  "license": "ISC",
+  "license": "MIT",
   "devDependencies": {
-    "@types/node": "^18.0.0",
-    "ts-node": "^10.8.2",
-    "typescript": "^4.7.4"
+    "@types/node": "^26.1.1",
+    "esbuild": "^0.28.1",
+    "esbuild-fix-imports": "^1.0.8",
+    "typescript": "^7.0.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  },
+  "dependencies": {
+    "rcon": "^1.1.0"
   }
 }

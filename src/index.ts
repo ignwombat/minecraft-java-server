@@ -1,22 +1,34 @@
-export { MinecraftServer } from './server';
+import MinecraftServer from './server';
 
-export {
-    Rcon,
+// Export everything
+export default MinecraftServer;
+export { default as addObjectDefaults } from './addObjectDefaults';
+export { RconRequestId, RconRequestType, RconResponseType } from './enum';
+export { default as eventEmitter } from './eventEmitter';
+export { default as EventPatterns } from './eventPatterns';
+export { loadEula, loadServerProperties } from './loader';
+export { default as Rcon, encode, decode } from './rcon';
+export { addServerConfigDefaults, defaultServerConfig } from './serverConfig';
+export { defaultServerProperties } from './serverProperties';
 
-    RequestId,
-    RequestType,
-    ResponseType,
+// Export all types
+export type {
+    ConnectionError,
+    RSU,
 
-    encode,
-    decode
-} from './rcon';
+    EventEmitter,
+    EventKey,
+    EventMap,
+    EventReceiver,
 
-export {
+    EventPatternObject,
+
     RconConfig,
-    ServerConfig,
-    EventPatterns
-} from './config';
+    RconPromise,
 
-export {
-    ServerProperties
-} from './properties';
+    MinecraftServerEvents,
+
+    ServerConfig,
+    
+    SafeServerProperties as ServerProperties
+} from './types';
